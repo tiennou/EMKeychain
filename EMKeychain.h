@@ -22,66 +22,56 @@
  OTHER DEALINGS IN THE SOFTWARE.
  */
 
-
 #import <Cocoa/Cocoa.h>
 #import <Security/Security.h>
 
-@interface EMKeychainItem : NSObject {
-	NSString *myPassword;
-	NSString *myUsername;
-	NSString *myLabel;
-	SecKeychainItemRef coreKeychainItem;
-}
+extern NSString * const EMKeychainErrorDomain;
 
-+ (void)lockKeychain;
-+ (void)unlockKeychain;
-+ (void)setLogsErrors:(BOOL)flag;
-+ (BOOL)deleteKeychainItem:(EMKeychainItem*)kcItem error:(NSError**)error;
+@interface EMKeychainItem : NSObject
 
-- (NSString *)password;
-- (NSString *)username;
-- (NSString *)label;
-- (SecKeychainItemRef)coreKeychainItem;
-- (BOOL)setPassword:(NSString *)newPassword;
-- (BOOL)setUsername:(NSString *)newUsername;
-- (BOOL)setLabel:(NSString *)newLabel;
++ (BOOL)lockKeychain:(NSError **)error;
++ (BOOL)unlockKeychain:(NSError **)error;
+
+- (instancetype)initWithKeychainItemRef:(SecKeychainItemRef)keychainItemRef NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
+
+@property (assign, readonly) SecKeychainItemRef keychainItemRef NS_RETURNS_INNER_POINTER;
+
+@property (copy) NSString *username;
+@property (copy) NSString *password;
+@property (copy) NSString *label;
+
+- (BOOL)setUsername:(NSString *)username error:(NSError **)error;
+- (BOOL)setPassword:(NSString *)password error:(NSError **)error;
+- (BOOL)setLabel:(NSString *)label error:(NSError **)error;
+
+- (BOOL)deleteItem:(NSError **)error;
 
 @end 
 
 @interface EMGenericKeychainItem : EMKeychainItem
-{
-	NSString *myServiceName;
-}
 
-+ (EMGenericKeychainItem *)genericKeychainItemForService:(NSString *)serviceNameString withUsername:(NSString *)usernameString;
-+ (EMGenericKeychainItem *)addGenericKeychainItemForService:(NSString *)serviceNameString withUsername:(NSString *)usernameString password:(NSString *)passwordString;
++ (instancetype)genericKeychainItemForService:(NSString *)serviceNameString withUsername:(NSString *)usernameString error:(NSError **)error;
++ (instancetype)addGenericKeychainItemForService:(NSString *)serviceNameString withUsername:(NSString *)usernameString password:(NSString *)passwordString error:(NSError **)error;
 
-+ (void) setKeychainPassword:(NSString*)password forUsername:(NSString*)username service:(NSString*)serviceName;
-+ (NSString*) passwordForUsername:(NSString*)username service:(NSString*)serviceName;
+@property (copy) NSString *serviceName;
 
-+ (id)genericKeychainItem:(SecKeychainItemRef)item forServiceName:(NSString *)serviceName username:(NSString *)username password:(NSString *)password;
-- (NSString *)serviceName;
-- (BOOL)setServiceName:(NSString *)newServiceName;
+- (BOOL)setServiceName:(NSString *)serviceName error:(NSError **)error;
+
 @end
 
 @interface EMInternetKeychainItem : EMKeychainItem
-{
-	NSString *myServer;
-	NSString *myPath;
-	int myPort;
-	SecProtocolType myProtocol;
-}
 
-+ (EMInternetKeychainItem *)internetKeychainItemForServer:(NSString *)serverString withUsername:(NSString *)usernameString path:(NSString *)pathString port:(int)port protocol:(SecProtocolType)protocol;
-+ (EMInternetKeychainItem *)addInternetKeychainItemForServer:(NSString *)serverString withUsername:(NSString *)usernameString password:(NSString *)passwordString path:(NSString *)pathString port:(int)port protocol:(SecProtocolType)protocol;
++ (instancetype)internetKeychainItemForServer:(NSString *)serverString withUsername:(NSString *)usernameString path:(NSString *)pathString port:(int)port protocol:(SecProtocolType)protocol error:(NSError **)error;
++ (instancetype)addInternetKeychainItemForServer:(NSString *)serverString withUsername:(NSString *)usernameString password:(NSString *)passwordString path:(NSString *)pathString port:(int)port protocol:(SecProtocolType)protocol error:(NSError **)error;
 
-+ (id)internetKeychainItem:(SecKeychainItemRef)item forServer:(NSString *)server username:(NSString *)username password:(NSString *)password path:(NSString *)path port:(int)port protocol:(SecProtocolType)protocol;
-- (NSString *)server;
-- (NSString *)path;
-- (int)port;
-- (SecProtocolType)protocol;
-- (BOOL)setServer:(NSString *)newServer;
-- (BOOL)setPath:(NSString *)newPath;
-- (BOOL)setPort:(int)newPort;
-- (BOOL)setProtocol:(SecProtocolType)newProtocol;
+@property (copy) NSString *server;
+@property (copy) NSString *path;
+@property (assign) int port;
+@property (assign) SecProtocolType protocol;
+
+- (BOOL)setServer:(NSString *)newServer error:(NSError **)error;
+- (BOOL)setPath:(NSString *)newPath error:(NSError **)error;
+- (BOOL)setPort:(int)newPort error:(NSError **)error;
+- (BOOL)setProtocol:(SecProtocolType)newProtocol error:(NSError **)error;
 @end

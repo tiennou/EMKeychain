@@ -24,129 +24,131 @@
 
 #import "EMKeychain.h"
 
-@interface EMKeychainItem (Private)
-- (BOOL)modifyAttributeWithTag:(SecItemAttr)attributeTag toBeString:(NSString *)newStringValue;
+NSString * const EMKeychainErrorDomain = @"EMKeychainErrorDomain";
+
+BOOL EMKeychainError(NSError **error, NSString *description, OSStatus keychainError) {
+	if (error) {
+		NSError *osError = [NSError errorWithDomain:NSOSStatusErrorDomain code:keychainError userInfo:nil];
+		NSDictionary *userInfo = @{
+								   NSLocalizedDescriptionKey: description,
+								   NSUnderlyingErrorKey: osError,
+								   };
+		*error = [NSError errorWithDomain:EMKeychainErrorDomain code:osError.code userInfo:userInfo];
+	}
+	return NO;
+}
+
+BOOL EMError(NSError **error, NSString *description, NSString *failureReason) {
+	if (error) {
+		NSDictionary *userInfo = @{
+								   NSLocalizedDescriptionKey: description,
+								   NSLocalizedFailureReasonErrorKey: failureReason,
+								   };
+		*error = [NSError errorWithDomain:EMKeychainErrorDomain code:description.hash userInfo:userInfo];
+	}
+	return NO;
+}
+
+@interface EMKeychainItem () {
+	SecKeychainItemRef _keychainItemRef;
+}
 @end
 
 @implementation EMKeychainItem
 
-static BOOL _logErrors;
-
-+ (void)lockKeychain {
-	SecKeychainLock(NULL);
-}
-+ (void)unlockKeychain {
-	SecKeychainUnlock(NULL, 0, NULL, NO);
-}
-+ (void)setLogsErrors:(BOOL)flag {
-	_logErrors = flag;
-}
-+(BOOL)deleteKeychainItem:(EMKeychainItem*)kcItem error:(NSError**)error {
-	OSStatus returnStatus = SecKeychainItemDelete([kcItem coreKeychainItem]);
-	if (returnStatus != noErr)
-	{
-		NSString *errorText = [NSString stringWithFormat: @"Error (%@) - %s", NSStringFromSelector(_cmd), GetMacOSStatusErrorString(returnStatus)];
-		NSLog(@"%@", errorText);
-		NSMutableDictionary *errorDetail = [NSMutableDictionary dictionary];
-		[errorDetail setValue: errorText forKey:NSLocalizedDescriptionKey];
-		*error = [NSError errorWithDomain:@"EMKeychainErrorDomain" code:returnStatus userInfo:errorDetail];
-		return NO;
-	} else {
-		return YES;
++ (BOOL)lockKeychain:(NSError **)error {
+	OSStatus status = SecKeychainLock(NULL);
+	if (status != noErr) {
+		return EMKeychainError(error, @"Keychain lock failed", status);
 	}
+	return YES;
 }
 
-- (id)initWithCoreKeychainItem:(SecKeychainItemRef)item username:(NSString *)username password:(NSString *)password {
-	if (self = [super init]) 	{
-		coreKeychainItem = item;
-		[self setValue:username forKey:@"myUsername"];
-		[self setValue:password forKey:@"myPassword"];
++ (BOOL)unlockKeychain:(NSError **)error {
+	OSStatus status = SecKeychainUnlock(NULL, 0, NULL, NO);
+	if (status != noErr) {
+		return EMKeychainError(error, @"Keychain lock failed", status);
 	}
+	return YES;
+}
+
++ (const NSDictionary *)attributeMapping {
+	const NSDictionary *attrObjectMapping = @{
+											  @(kSecAccountItemAttr): [NSString class],
+											  @(kSecLabelItemAttr): [NSString class],
+											  @(kSecProtocolItemAttr): [NSNumber class],
+											  @(kSecTypeItemAttr): [NSNumber class],
+											  };
+	return attrObjectMapping;
+}
+
++ (instancetype)keychainItemWithRef:(SecKeychainItemRef)keychainItemRef {
+	SecItemClass itemClass;
+	OSStatus status = SecKeychainItemCopyContent(keychainItemRef, &itemClass, NULL, NULL, NULL);
+	if (status != noErr) return nil;
+
+	Class class = nil;
+	switch (itemClass) {
+		case kSecGenericPasswordItemClass: class = [EMGenericKeychainItem class]; break;
+		case kSecInternetPasswordItemClass: class = [EMInternetKeychainItem class]; break;
+		default: break;
+	}
+	if (class == nil) return nil;
+
+	return [[class alloc] initWithKeychainItemRef:keychainItemRef];
+}
+
+- (instancetype)initWithKeychainItemRef:(SecKeychainItemRef)keychainItemRef {
+	self = [super init];
+	if (!self) return nil;
+
+	_keychainItemRef = keychainItemRef;
+
 	return self;
 }
 
-- (NSString *)password {
-	return myPassword;
+- (instancetype)init {
+	[NSException raise:NSInternalInconsistencyException format:@"-init is unavailable"];
+	return nil;
 }
-- (NSString *)username {
-	return myUsername;
-}
-- (NSString *)label {
-	return myLabel;
-}
-- (SecKeychainItemRef)coreKeychainItem {
-	return coreKeychainItem;
-}
-- (BOOL)setPassword:(NSString *)newPasswordString {
-	if (!newPasswordString)
-		return NO;
-	
-	[self willChangeValueForKey:@"password"];
-	myPassword = [newPasswordString copy];
-	[self didChangeValueForKey:@"password"];
-	
-	const char *newPassword = [newPasswordString UTF8String];
-	OSStatus returnStatus = SecKeychainItemModifyAttributesAndData(coreKeychainItem, NULL, (UInt32)strlen(newPassword), (void *)newPassword);
-	return (returnStatus == noErr);	
-}
-- (BOOL)setUsername:(NSString *)newUsername {
-	[self willChangeValueForKey:@"username"];
-	myUsername = [newUsername copy];
-	[self didChangeValueForKey:@"username"];	
-	
-	return [self modifyAttributeWithTag:kSecAccountItemAttr toBeString:newUsername];
-}
-- (BOOL)setLabel:(NSString *)newLabel {
-	[self willChangeValueForKey:@"label"];
-	myLabel = [newLabel copy];
-	[self didChangeValueForKey:@"label"];
-	
-	return [self modifyAttributeWithTag:kSecLabelItemAttr toBeString:newLabel];
-}
+
 - (void)dealloc {
-	if (coreKeychainItem) CFRelease(coreKeychainItem);
-}
-@end
-
-@implementation EMKeychainItem (Private)
-- (BOOL)modifyAttributeWithTag:(SecItemAttr)attributeTag toBeString:(NSString *)newStringValue {
-	const char *newValue = [newStringValue UTF8String];
-	SecKeychainAttribute attributes[1];
-	attributes[0].tag = attributeTag;
-	attributes[0].length = (UInt32)strlen(newValue);
-	attributes[0].data = (void *)newValue;
-	
-	SecKeychainAttributeList list;
-	list.count = 1;
-	list.attr = attributes;
-	
-	OSStatus returnStatus = SecKeychainItemModifyAttributesAndData(coreKeychainItem, &list, 0, NULL);
-	return (returnStatus == noErr);
+	if (_keychainItemRef) CFRelease(_keychainItemRef);
 }
 
-+ (id)getKeychainAttribute:(SecItemAttr)attrTag fromItem:(SecKeychainItemRef)item {
+- (SecKeychainItemRef)keychainItemRef {
+	return _keychainItemRef;
+}
+
+- (id)objectForAttribute:(SecItemAttr)attr error:(NSError **)error {
+	Class objClass = [[self class] attributeMapping][@(attr)];
+	if (!objClass) {
+		EMError(error, @"Unsupported attribute", @"The attribute '%@' is not supported");
+		return nil;
+	}
+
 	SecKeychainAttribute attribute[1];
-	attribute[0].tag = attrTag;
+	attribute[0].tag = attr;
 	SecKeychainAttributeList list;
 	list.count = 1;
 	list.attr = attribute;
-	
-	OSStatus returnStatus = SecKeychainItemCopyContent(item, NULL, &list, NULL, NULL);
-	if (returnStatus != noErr || !item) {
-		if (_logErrors) {
-			NSLog(@"Error (%@) - %s", NSStringFromSelector(_cmd), GetMacOSStatusErrorString(returnStatus));
-		}
+
+	OSStatus status = SecKeychainItemCopyContent(self.keychainItemRef, NULL, &list, NULL, NULL);
+	if (status != noErr) {
+		EMKeychainError(error, @"Failed to get attribute", status);
 		return nil;
 	}
-	
-	NSString *attrString;
-	if (attrTag == kSecPortItemAttr || attrTag == kSecProtocolItemAttr) {
-		// Thanks, Omni
+
+	id object = nil;
+	if (objClass == [NSString class]) {
+		object = [[NSString alloc] initWithBytes:list.attr[0].data length:list.attr[0].length encoding:NSUTF8StringEncoding];
+	} else if (objClass == [NSNumber class]) {
 		NSData *attrData = [NSData dataWithBytes:list.attr[0].data length:list.attr[0].length];
+		// Thanks, Omni
 		UInt32 int4 = 0;
 		UInt16 int2 = 0;
 		UInt8 int1 = 0;
-		switch([attrData length]) {
+		switch(attrData.length) {
 			case 4:
 				[attrData getBytes:&int4 length:[attrData length]];
 				break;
@@ -159,102 +161,184 @@ static BOOL _logErrors;
 				int4 = int1;
 				break;
 			default:
-				NSLog(@"Unexpected integer format in keychain item.");
-				int4 = 0;
+				EMError(error, @"Unexpected integer format in keychain item.", nil);
+				return nil;
 		}
-		return [NSNumber numberWithUnsignedInt:int4];
-	} else {
-		attrString = [[NSString alloc] initWithBytes:list.attr[0].data length:list.attr[0].length encoding: NSUTF8StringEncoding];
+		object =  [NSNumber numberWithUnsignedInt:int4];
 	}
 
 	SecKeychainItemFreeContent(&list, NULL);
-	return attrString;
+
+	return object;
 }
+
+- (BOOL)setObject:(id)object forAttribute:(SecItemAttr)attr error:(NSError **)error {
+	Class objClass = [[self class] attributeMapping][@(attr)];
+	if (!objClass) {
+		return EMError(error, @"Unsupported attribute", @"The attribute is not supported");
+	}
+	if (![object isKindOfClass:objClass]) {
+		return EMError(error, @"Invalid object class for attribute", nil);
+	}
+
+	SecKeychainAttribute attributes[1];
+	attributes[0].tag = attr;
+	if (objClass == [NSString class]) {
+		const char *string = [(NSString *)object UTF8String];
+		attributes[0].length = (UInt32)strlen(string);
+		attributes[0].data = (void *)string;
+	} else if (objClass == [NSNumber class]) {
+		long number = [(NSNumber *)object longValue];
+		attributes[0].length = sizeof(long);
+		attributes[0].data = &number;
+	}
+
+	SecKeychainAttributeList list;
+	list.count = 1;
+	list.attr = attributes;
+
+	OSStatus status = SecKeychainItemModifyAttributesAndData(self.keychainItemRef, &list, 0, NULL);
+	if (status != noErr) {
+		return EMKeychainError(error, @"Attribute modification failed", status);
+	}
+
+	return YES;
+}
+
+- (BOOL)deleteItem:(NSError **)error {
+	OSStatus status = SecKeychainItemDelete(self.keychainItemRef);
+	if (status != noErr) {
+		return EMKeychainError(error, @"Keychain item deletion failed", status);
+	}
+
+	return YES;
+}
+
+- (NSString *)username {
+	return [self objectForAttribute:kSecAccountItemAttr error:NULL];
+}
+
+- (void)setUsername:(NSString *)username {
+	[self setUsername:username error:NULL];
+}
+
+- (BOOL)setUsername:(NSString *)username error:(NSError *__autoreleasing *)error {
+	return [self setObject:username forAttribute:kSecAccountItemAttr error:error];
+}
+
+- (NSString *)password {
+	UInt32 length = 0;
+	void *data;
+	OSStatus status = SecKeychainItemCopyContent(self.keychainItemRef, NULL, NULL, &length, &data);
+	if (status != noErr) {
+		NSError *error = nil;
+		EMKeychainError(&error, @"Failed to get password", status);
+		NSLog(@"EMKeychainItem: %@", error);
+		return nil;
+	}
+
+	NSString *passwordString = [[NSString alloc] initWithBytes:data	length:length encoding: NSUTF8StringEncoding];
+	SecKeychainItemFreeContent(NULL, data);
+
+	return passwordString;
+}
+
+- (void)setPassword:(NSString *)password {
+	[self setPassword:password error:NULL];
+}
+
+- (BOOL)setPassword:(NSString *)newPasswordString error:(NSError *__autoreleasing *)error {
+	NSParameterAssert(newPasswordString != nil);
+	
+	const char *newPassword = [newPasswordString UTF8String];
+	OSStatus status = SecKeychainItemModifyAttributesAndData(_keychainItemRef, NULL, (UInt32)strlen(newPassword), (void *)newPassword);
+	if (status != noErr) {
+		return EMKeychainError(error, @"Password change failed", status);
+	}
+	return YES;
+}
+
+- (NSString *)label {
+	return [self objectForAttribute:kSecLabelItemAttr error:NULL];
+}
+
+- (void)setLabel:(NSString *)label {
+	[self setLabel:label error:NULL];
+}
+
+- (BOOL)setLabel:(NSString *)label error:(NSError *__autoreleasing *)error {
+	return [self setObject:label forAttribute:kSecLabelItemAttr error:error];
+}
+
 @end
 
 @implementation EMGenericKeychainItem
 
-+ (EMGenericKeychainItem *)genericKeychainItemForService:(NSString *)serviceNameString withUsername:(NSString *)usernameString {
++ (EMGenericKeychainItem *)genericKeychainItemForService:(NSString *)serviceNameString withUsername:(NSString *)usernameString error:(NSError **)error {
 	const char *serviceName  = serviceNameString == nil ? "" : [serviceNameString UTF8String];
 	UInt32 serviceNameLength = serviceNameString == nil ? 0  : (UInt32)strlen(serviceName);
 
 	const char *username  = usernameString == nil ? "" : [usernameString UTF8String];
 	UInt32 usernameLength = usernameString == nil ? 0  : (UInt32)strlen(username);
 	
-	UInt32 passwordLength = 0;
-	char *password = nil;
-	
 	SecKeychainItemRef item = nil;
-	OSStatus returnStatus = SecKeychainFindGenericPassword(NULL, serviceNameLength, serviceName, usernameLength, username, &passwordLength, (void **)&password, &item);
-	if (returnStatus != noErr || !item) {
-		if (_logErrors) {
-			NSLog(@"Error (%@) - %s", NSStringFromSelector(_cmd), GetMacOSStatusErrorString(returnStatus));
-		}
+	OSStatus status = SecKeychainFindGenericPassword(NULL, serviceNameLength, serviceName, usernameLength, username, NULL, NULL, &item);
+	if (status != noErr) {
+		EMKeychainError(error, @"Generic password not found", status);
 		return nil;
 	}
-	NSString *passwordString = [[NSString alloc] initWithBytes:password length:passwordLength encoding: NSUTF8StringEncoding];
-	SecKeychainItemFreeContent(NULL, password);
 
-	usernameString = [self getKeychainAttribute:kSecAccountItemAttr fromItem: item];
-	serviceNameString = [self getKeychainAttribute:kSecServiceItemAttr fromItem: item];
-
-	return [EMGenericKeychainItem genericKeychainItem:item forServiceName:serviceNameString username:usernameString password:passwordString];
+	return [[super alloc] initWithKeychainItemRef:item];
 }
 
-+ (EMGenericKeychainItem *)addGenericKeychainItemForService:(NSString *)serviceNameString withUsername:(NSString *)usernameString password:(NSString *)passwordString {
-	if (!usernameString || [usernameString length] == 0 || !serviceNameString || [serviceNameString length] == 0)
-		return nil;
-	
++ (EMGenericKeychainItem *)addGenericKeychainItemForService:(NSString *)serviceNameString withUsername:(NSString *)usernameString password:(NSString *)passwordString  error:(NSError **)error {
+	NSParameterAssert(serviceNameString && serviceNameString.length != 0);
+	NSParameterAssert(usernameString && usernameString.length != 0);
+	NSParameterAssert(passwordString && passwordString.length != 0);
+
 	const char *serviceName = [serviceNameString UTF8String];
 	const char *username = [usernameString UTF8String];
 	const char *password = [passwordString UTF8String];
 	
 	SecKeychainItemRef item = nil;
-	OSStatus returnStatus = SecKeychainAddGenericPassword(NULL, (UInt32)strlen(serviceName), serviceName, (UInt32)strlen(username), username, (UInt32)strlen(password), (void *)password, &item);
+	OSStatus status = SecKeychainAddGenericPassword(NULL, (UInt32)strlen(serviceName), serviceName, (UInt32)strlen(username), username, (UInt32)strlen(password), (void *)password, &item);
 	
-	if (returnStatus != noErr || !item) {
-		NSLog(@"Error (%@) - %s", NSStringFromSelector(_cmd), GetMacOSStatusErrorString(returnStatus));
+	if (status != noErr || !item) {
+		EMKeychainError(error, @"Generic password creation failed", status);
 		return nil;
 	}
-	return [EMGenericKeychainItem genericKeychainItem:item forServiceName:serviceNameString username:usernameString password:passwordString];
+	return [[super alloc] initWithKeychainItemRef:item];
 }
 
-+ (void) setKeychainPassword:(NSString*)password forUsername:(NSString*)username service:(NSString*)serviceName {
-	EMKeychainItem *item = [EMGenericKeychainItem genericKeychainItemForService:serviceName withUsername:username];
++ (void) setKeychainPassword:(NSString*)password forUsername:(NSString*)username service:(NSString*)serviceName error:(NSError **)error {
+	EMKeychainItem *item = [EMGenericKeychainItem genericKeychainItemForService:serviceName withUsername:username error:error];
 	if (item == nil)
-		[EMGenericKeychainItem addGenericKeychainItemForService:serviceName withUsername:username password:password];
+		[EMGenericKeychainItem addGenericKeychainItemForService:serviceName withUsername:username password:password error:error];
 	else
 		[item setPassword:password];
 }
 
-+ (NSString*) passwordForUsername:(NSString*)username service:(NSString*)serviceName {
-	return [[EMGenericKeychainItem genericKeychainItemForService:serviceName withUsername:username] password];
++ (NSString *) passwordForUsername:(NSString*)username service:(NSString*)serviceName error:(NSError **)error {
+	EMGenericKeychainItem *item = [EMGenericKeychainItem genericKeychainItemForService:serviceName withUsername:username error:error];
+	if (!item) return nil;
+	return [item password];
 }
 
-- (id)initWithCoreKeychainItem:(SecKeychainItemRef)item serviceName:(NSString *)serviceName username:(NSString *)username password:(NSString *)password {
-	if (self = [super initWithCoreKeychainItem:item username:username password:password]) {
-		[self setValue:serviceName forKey:@"myServiceName"];
-	}
-	return self;
-}
-+ (id)genericKeychainItem:(SecKeychainItemRef)item forServiceName:(NSString *)serviceName username:(NSString *)username password:(NSString *)password {
-	return [[EMGenericKeychainItem alloc] initWithCoreKeychainItem:item serviceName:serviceName username:username password:password];
-}
 - (NSString *)serviceName {
-	return myServiceName;
+	return [self objectForAttribute:kSecServiceItemAttr error:NULL];
 }
 
-- (BOOL)setServiceName:(NSString *)newServiceName {
-	[self willChangeValueForKey:@"serviceName"];
-	myServiceName = [newServiceName copy];
-	[self didChangeValueForKey:@"serviceName"];	
-	
-	return [self modifyAttributeWithTag:kSecServiceItemAttr toBeString:newServiceName];
+- (void)setServiceName:(NSString *)serviceName {
+	[self setServiceName:serviceName error:NULL];
+}
+
+- (BOOL)setServiceName:(NSString *)serviceName error:(NSError *__autoreleasing *)error {
+	return [self setObject:serviceName forAttribute:kSecServiceItemAttr error:error];
 }
 @end
 
 @implementation EMInternetKeychainItem
-+ (EMInternetKeychainItem *)internetKeychainItemForServer:(NSString *)serverString withUsername:(NSString *)usernameString path:(NSString *)pathString port:(int)port protocol:(SecProtocolType)protocol {
++ (instancetype)internetKeychainItemForServer:(NSString *)serverString withUsername:(NSString *)usernameString path:(NSString *)pathString port:(int)port protocol:(SecProtocolType)protocol error:(NSError **)error {
 	
 	const char *server  = serverString == nil ? "" : [serverString UTF8String];
 	UInt32 serverLength = serverString == nil ? 0 : (UInt32)strlen(server);
@@ -265,39 +349,27 @@ static BOOL _logErrors;
 	const char *path  = pathString == nil ? "" : [pathString UTF8String];
 	UInt32 pathLength = pathString == nil ? 0 : (UInt32)strlen(path);
 	
-	char *password = nil;
-	UInt32 passwordLength = 0;
-	
 	SecKeychainItemRef item = nil;
-	OSStatus returnStatus = SecKeychainFindInternetPassword(NULL, serverLength, server, 0, NULL, usernameLength, username, pathLength, path, port, protocol, kSecAuthenticationTypeAny, &passwordLength, (void **)&password, &item);
+	OSStatus status = SecKeychainFindInternetPassword(NULL, serverLength, server, 0, NULL, usernameLength, username, pathLength, path, port, protocol, kSecAuthenticationTypeAny, 0, NULL, &item);
 	
-	if (returnStatus != noErr && protocol == kSecProtocolTypeFTP) {
+	if (status != noErr && protocol == kSecProtocolTypeFTP) {
 		//Some clients (like Transmit) still save passwords with kSecProtocolTypeFTPAccount, which was deprecated.  Let's check for that.
 		protocol = kSecProtocolTypeFTPAccount;		
-		returnStatus = SecKeychainFindInternetPassword(NULL, (UInt32)strlen(server), server, 0, NULL, (UInt32)strlen(username), username, (UInt32)strlen(path), path, port, protocol, 0, &passwordLength, (void **)&password, &item);
+		status = SecKeychainFindInternetPassword(NULL, serverLength, server, 0, NULL, usernameLength, username, pathLength, path, port, protocol, kSecAuthenticationTypeAny, 0, NULL, &item);
 	}
 	
-	if (returnStatus != noErr || !item) {
-		if (_logErrors) {
-			NSLog(@"Error (%@) - %s", NSStringFromSelector(_cmd), GetMacOSStatusErrorString(returnStatus));
-		}
+	if (status != noErr) {
+		EMKeychainError(error, @"Internet password not found", status);
 		return nil;
 	}
-	NSString *passwordString = [[NSString alloc] initWithBytes:password length:passwordLength encoding: NSUTF8StringEncoding];
-	SecKeychainItemFreeContent(NULL, password);
-
-	usernameString = [self getKeychainAttribute:kSecAccountItemAttr fromItem: item];
-	serverString = [self getKeychainAttribute:kSecServerItemAttr fromItem: item];
-	pathString = [self getKeychainAttribute:kSecPathItemAttr fromItem: item];
-	port = [[self getKeychainAttribute:kSecPortItemAttr fromItem: item] intValue];
-	protocol = [[self getKeychainAttribute:kSecProtocolItemAttr fromItem: item] intValue];
-	return [EMInternetKeychainItem internetKeychainItem:item forServer:serverString username:usernameString password:passwordString path:pathString port:port protocol:protocol];
+	return [[self alloc] initWithKeychainItemRef:item];
 }
 
-+ (EMInternetKeychainItem *)addInternetKeychainItemForServer:(NSString *)serverString withUsername:(NSString *)usernameString password:(NSString *)passwordString path:(NSString *)pathString port:(int)port protocol:(SecProtocolType)protocol {
-	if (!usernameString || [usernameString length] == 0 || !serverString || [serverString length] == 0 || !passwordString || [passwordString length] == 0)
-		return nil;
-	
++ (instancetype)addInternetKeychainItemForServer:(NSString *)serverString withUsername:(NSString *)usernameString password:(NSString *)passwordString path:(NSString *)pathString port:(int)port protocol:(SecProtocolType)protocol error:(NSError **)error {
+	NSParameterAssert(usernameString && usernameString.length != 0);
+	NSParameterAssert(serverString && serverString.length != 0);
+	NSParameterAssert(passwordString && passwordString.length != 0);
+
 	const char *server = [serverString UTF8String];
 	const char *username = [usernameString UTF8String];
 	const char *password = [passwordString UTF8String];
@@ -307,76 +379,69 @@ static BOOL _logErrors;
 		path = "";
 	
 	SecKeychainItemRef item = nil;
-	OSStatus returnStatus = SecKeychainAddInternetPassword(NULL, (UInt32)strlen(server), server, 0, NULL, (UInt32)strlen(username), username, (UInt32)strlen(path), path, port, protocol, kSecAuthenticationTypeDefault, (UInt32)strlen(password), (void *)password, &item);
+	OSStatus status = SecKeychainAddInternetPassword(NULL, (UInt32)strlen(server), server, 0, NULL, (UInt32)strlen(username), username, (UInt32)strlen(path), path, port, protocol, kSecAuthenticationTypeDefault, (UInt32)strlen(password), (void *)password, &item);
 	
-	if (returnStatus != noErr || !item) {
-		NSLog(@"Error (%@) - %s", NSStringFromSelector(_cmd), GetMacOSStatusErrorString(returnStatus));
+	if (status != noErr) {
+		EMKeychainError(error, @"Internet password creation failed", status);
 		return nil;
 	}
-	return [EMInternetKeychainItem internetKeychainItem:item forServer:serverString username:usernameString password:passwordString path:pathString port:port protocol:protocol];
+
+	return [[self alloc] initWithKeychainItemRef:item];
 }
 
-- (id)initWithCoreKeychainItem:(SecKeychainItemRef)item server:(NSString *)server username:(NSString *)username password:(NSString *)password path:(NSString *)path port:(int)port protocol:(SecProtocolType)protocol {
-	if (self = [super initWithCoreKeychainItem:item username:username password:password]) {
-		[self setValue:server forKey:@"myServer"];
-		[self setValue:path forKey:@"myPath"];
-		[self setValue:[NSNumber numberWithInt:port] forKey:@"myPort"];
-		[self setValue:[NSNumber numberWithInt:protocol] forKey:@"myProtocol"];
-	}
-	return self;
-}
-+ (id)internetKeychainItem:(SecKeychainItemRef)item forServer:(NSString *)server username:(NSString *)username password:(NSString *)password path:(NSString *)path port:(int)port protocol:(SecProtocolType)protocol {
-	return [[EMInternetKeychainItem alloc] initWithCoreKeychainItem:item server:server username:username password:password path:path port:port protocol:protocol];
-}
 - (NSString *)server {
-	return myServer;
-}
-- (NSString *)path {
-	return myPath;
-}
-- (int)port {
-	return myPort;
-}
-- (SecProtocolType)protocol {
-	return myProtocol;
+	return [self objectForAttribute:kSecServerItemAttr error:NULL];
 }
 
-- (BOOL)setServer:(NSString *)newServer {
-	[self willChangeValueForKey:@"server"];
-	myServer = [newServer copy];	
-	[self didChangeValueForKey:@"server"];
-	
-	return [self modifyAttributeWithTag:kSecServerItemAttr toBeString:newServer];
+- (void)setServer:(NSString *)server {
+	[self setServer:server error:NULL];
 }
-- (BOOL)setPath:(NSString *)newPath {
-	[self willChangeValueForKey:@"path"];
-	myPath = [newPath copy];
-	[self didChangeValueForKey:@"path"];
-	
-	return [self modifyAttributeWithTag:kSecPathItemAttr toBeString:newPath];
+
+- (BOOL)setServer:(NSString *)server error:(NSError **)error {
+	return [self setObject:server forAttribute:kSecServerItemAttr error:error];
 }
-- (BOOL)setPort:(int)newPort {
-	[self willChangeValueForKey:@"port"];
-	myPort = newPort;
-	[self didChangeValueForKey:@"port"];
-	
-	return [self modifyAttributeWithTag:kSecPortItemAttr toBeString:[NSString stringWithFormat:@"%i", newPort]];
+
+- (NSString *)path {
+	return [self objectForAttribute:kSecPathItemAttr error:NULL];
 }
-- (BOOL)setProtocol:(SecProtocolType)newProtocol {
-	[self willChangeValueForKey:@"protocol"];
-	myProtocol = newProtocol;
-	[self didChangeValueForKey:@"protocol"];
-	
-	SecKeychainAttribute attributes[1];
-	attributes[0].tag = kSecProtocolItemAttr;
-	attributes[0].length = sizeof(newProtocol);
-	attributes[0].data = (void *)newProtocol;
-	
-	SecKeychainAttributeList list;
-	list.count = 1;
-	list.attr = attributes;
-	
-	OSStatus returnStatus = SecKeychainItemModifyAttributesAndData(coreKeychainItem, &list, 0, NULL);
-	return (returnStatus == noErr);
+
+- (void)setPath:(NSString *)path {
+	[self setPath:path error:NULL];
+}
+
+- (BOOL)setPath:(NSString *)path error:(NSError **)error {
+	return [self setObject:path forAttribute:kSecPathItemAttr error:error];
+}
+
+- (int)port {
+	NSNumber *number = [self objectForAttribute:kSecPortItemAttr error:NULL];
+	int port = 0;
+	if (number) port = [number intValue];
+	return port;
+}
+
+- (void)setPort:(int)port {
+	[self setPort:port error:NULL];
+}
+
+- (BOOL)setPort:(int)port error:(NSError **)error {
+	NSNumber *number = [NSNumber numberWithInt:port];
+	return [self setObject:number forAttribute:kSecPortItemAttr error:error];
+}
+
+- (SecProtocolType)protocol {
+	NSNumber *number = [self objectForAttribute:kSecProtocolItemAttr error:NULL];
+	SecProtocolType protocol = kSecProtocolTypeAny;
+	if (number) protocol = [number intValue];
+	return protocol;
+}
+
+- (void)setProtocol:(SecProtocolType)protocol {
+	[self setProtocol:protocol error:NULL];
+}
+
+- (BOOL)setProtocol:(SecProtocolType)protocol error:(NSError *__autoreleasing *)error {
+	NSNumber *number = [NSNumber numberWithInt:protocol];
+	return [self setObject:number forAttribute:kSecProtocolItemAttr error:error];
 }
 @end
