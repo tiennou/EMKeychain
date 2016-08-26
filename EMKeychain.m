@@ -148,14 +148,14 @@ static BOOL _logErrors;
 		UInt8 int1 = 0;
 		switch([attrData length]) {
 			case 4:
-				[attrData getBytes:&int4];
+				[attrData getBytes:&int4 length:[attrData length]];
 				break;
 			case 2:
-				[attrData getBytes:&int2];
+				[attrData getBytes:&int2 length:[attrData length]];
 				int4 = int2;
 				break;
 			case 1:
-				[attrData getBytes:&int1];
+				[attrData getBytes:&int1 length:[attrData length]];
 				int4 = int1;
 				break;
 			default:
